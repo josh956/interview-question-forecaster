@@ -9,8 +9,275 @@ Analyzes a job description and resume to generate likely interview questions
 import streamlit as st
 import tempfile
 import os
+import json
+from typing import List, Optional
+from dataclasses import dataclass
 from pathlib import Path
-from forecaster import InterviewForecaster, AnalysisResult, InterviewQuestion
+
+import openai
+import fitz  # PyMuPDF
+from reportlab.lib.pagesizes import A4
+from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
+from reportlab.lib.units import inch
+from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, PageBreak
+from reportlab.lib.enums import TA_CENTER
+
+
+@dataclass
+class InterviewQuestion:
+    """Represents a single interview question with its STAR response."""
+    question: str
+    answer: str
+    category: str  # 'behavioral' or 'technical'
+    confidence: float  # 0.0 to 1.0
+
+
+@dataclass
+class AnalysisResult:
+    """Contains the complete analysis results."""
+    questions: List[InterviewQuestion]
+    summary: str
+    key_skills: List[str]
+    experience_gaps: List[str]
+
+
+class PDFProcessor:
+    """Handles PDF text extraction."""
+    
+    @staticmethod
+    def extract_text_from_pdf(pdf_path: str) -> str:
+        """Extract text content from a PDF file."""
+        try:
+            doc = fitz.open(pdf_path)
+            text = ""
+            for page_num in range(doc.page_count):
+                page = doc[page_num]
+                text += page.get_text()
+            doc.close()
+            return text.strip()
+        except Exception as e:
+            raise ValueError(f"Error extracting text from PDF {pdf_path}: {str(e)}")
+
+
+class OpenAIQuestionGenerator:
+    """Generates interview questions using OpenAI API."""
+    
+    def __init__(self, api_key: str):
+        """Initialize the OpenAI client."""
+        self.client = openai.OpenAI(api_key=api_key)
+        self.model = "gpt-5-mini"
+    
+    def generate_questions(self, resume_text: str, job_description: str, num_questions: int = 10) -> AnalysisResult:
+        """Generate interview questions and STAR responses."""
+        
+        prompt = self._create_analysis_prompt(resume_text, job_description, num_questions)
+        
+        try:
+            response = self.client.chat.completions.create(
+                model=self.model,
+                messages=[
+                    {"role": "system", "content": "You are an expert interview coach and career advisor. You analyze resumes and job descriptions to predict likely interview questions and craft compelling STAR responses."},
+                    {"role": "user", "content": prompt}
+                ]
+            )
+            
+            content = response.choices[0].message.content
+            return self._parse_response(content)
+            
+        except Exception as e:
+            raise RuntimeError(f"Error generating questions with OpenAI: {str(e)}")
+    
+    def _create_analysis_prompt(self, resume_text: str, job_description: str, num_questions: int = 10) -> str:
+        """Create the analysis prompt for OpenAI."""
+        return f"""
+Analyze the following job description and candidate resume to generate {num_questions} likely interview questions with STAR responses.
+
+JOB DESCRIPTION:
+{job_description}
+
+CANDIDATE RESUME:
+{resume_text}
+
+Please provide your analysis in the following JSON format:
+
+{{
+    "summary": "Brief 2-3 sentence summary of the candidate's fit for this role",
+    "key_skills": ["skill1", "skill2", "skill3"],
+    "experience_gaps": ["gap1", "gap2"],
+    "questions": [
+        {{
+            "question": "What is your experience with [specific technology/skill]?",
+            "answer": "Situation: [Context] Task: [What needed to be done] Action: [What you did] Result: [Outcome]",
+            "category": "technical",
+            "confidence": 0.9
+        }},
+        {{
+            "question": "Tell me about a time when you had to [behavioral scenario]",
+            "answer": "Situation: [Context] Task: [What needed to be done] Action: [What you did] Result: [Outcome]",
+            "category": "behavioral", 
+            "confidence": 0.8
+        }}
+    ]
+}}
+
+Requirements:
+1. Generate exactly {num_questions} questions (mix of behavioral and technical)
+2. Each answer should be a complete STAR response (60-90 seconds when spoken)
+3. Answers should be written in the candidate's voice based on their resume
+4. Technical questions should focus on skills mentioned in the JD
+5. Behavioral questions should relate to the role's requirements
+6. Confidence scores should reflect how likely the question is to be asked
+7. Include specific technologies, frameworks, and scenarios from the JD
+8. Make answers authentic and specific to the candidate's experience
+
+Focus on:
+- Skills alignment between resume and JD
+- Industry-specific questions
+- Leadership and teamwork scenarios
+- Problem-solving examples
+- Technical depth questions
+- Cultural fit questions
+"""
+    
+    def _parse_response(self, content: str) -> AnalysisResult:
+        """Parse the OpenAI response into structured data."""
+        try:
+            # Extract JSON from the response
+            start_idx = content.find('{')
+            end_idx = content.rfind('}') + 1
+            
+            if start_idx == -1 or end_idx == 0:
+                raise ValueError("No valid JSON found in response")
+            
+            json_str = content[start_idx:end_idx]
+            data = json.loads(json_str)
+            
+            questions = []
+            for q_data in data.get('questions', []):
+                question = InterviewQuestion(
+                    question=q_data['question'],
+                    answer=q_data['answer'],
+                    category=q_data['category'],
+                    confidence=q_data['confidence']
+                )
+                questions.append(question)
+            
+            return AnalysisResult(
+                questions=questions,
+                summary=data.get('summary', ''),
+                key_skills=data.get('key_skills', []),
+                experience_gaps=data.get('experience_gaps', [])
+            )
+            
+        except json.JSONDecodeError as e:
+            raise ValueError(f"Error parsing OpenAI response as JSON: {str(e)}")
+        except Exception as e:
+            raise ValueError(f"Error processing OpenAI response: {str(e)}")
+
+
+class PDFExporter:
+    """Handles PDF crib sheet generation."""
+    
+    def __init__(self):
+        self.styles = getSampleStyleSheet()
+        self._setup_custom_styles()
+    
+    def _setup_custom_styles(self):
+        """Set up custom paragraph styles."""
+        self.styles.add(ParagraphStyle(
+            name='QuestionStyle',
+            parent=self.styles['Normal'],
+            fontSize=12,
+            spaceAfter=6,
+            fontName='Helvetica-Bold',
+            textColor='#2c3e50'
+        ))
+        
+        self.styles.add(ParagraphStyle(
+            name='AnswerStyle',
+            parent=self.styles['Normal'],
+            fontSize=10,
+            spaceAfter=12,
+            leftIndent=20,
+            fontName='Helvetica'
+        ))
+        
+        self.styles.add(ParagraphStyle(
+            name='HeaderStyle',
+            parent=self.styles['Heading1'],
+            fontSize=16,
+            spaceAfter=12,
+            alignment=TA_CENTER,
+            fontName='Helvetica-Bold',
+            textColor='#34495e'
+        ))
+    
+    def export_crib_sheet(self, result: AnalysisResult, output_path: str):
+        """Export the analysis results to a PDF crib sheet."""
+        doc = SimpleDocTemplate(output_path, pagesize=A4, topMargin=0.5*inch)
+        story = []
+        
+        # Title
+        story.append(Paragraph("Interview Question Crib Sheet", self.styles['HeaderStyle']))
+        story.append(Spacer(1, 12))
+        
+        # Summary
+        if result.summary:
+            story.append(Paragraph("Summary", self.styles['QuestionStyle']))
+            story.append(Paragraph(result.summary, self.styles['AnswerStyle']))
+            story.append(Spacer(1, 12))
+        
+        # Key Skills
+        if result.key_skills:
+            story.append(Paragraph("Key Skills to Highlight", self.styles['QuestionStyle']))
+            skills_text = " • ".join(result.key_skills)
+            story.append(Paragraph(skills_text, self.styles['AnswerStyle']))
+            story.append(Spacer(1, 12))
+        
+        # Experience Gaps
+        if result.experience_gaps:
+            story.append(Paragraph("Potential Experience Gaps", self.styles['QuestionStyle']))
+            gaps_text = " • ".join(result.experience_gaps)
+            story.append(Paragraph(gaps_text, self.styles['AnswerStyle']))
+            story.append(Spacer(1, 12))
+        
+        # Questions and Answers
+        story.append(Paragraph("Interview Questions & STAR Responses", self.styles['QuestionStyle']))
+        story.append(Spacer(1, 6))
+        
+        for i, q in enumerate(result.questions, 1):
+            # Question
+            question_text = f"Q{i}: {q.question}"
+            story.append(Paragraph(question_text, self.styles['QuestionStyle']))
+            
+            # Category and confidence
+            category_text = f"[{q.category.title()}] Confidence: {q.confidence:.1%}"
+            story.append(Paragraph(category_text, self.styles['AnswerStyle']))
+            
+            # Answer
+            story.append(Paragraph(q.answer, self.styles['AnswerStyle']))
+            
+            # Add page break if we're at question 5 to keep it to 1 page
+            if i == 5:
+                story.append(PageBreak())
+        
+        doc.build(story)
+
+
+def extract_text_from_file(file_path: str) -> str:
+    """Extract text from a file (PDF or text)."""
+    path = Path(file_path)
+    
+    if not path.exists():
+        raise FileNotFoundError(f"File not found: {file_path}")
+    
+    if path.suffix.lower() == '.pdf':
+        return PDFProcessor.extract_text_from_pdf(file_path)
+    elif path.suffix.lower() in ['.txt', '.md']:
+        with open(file_path, 'r', encoding='utf-8') as f:
+            return f.read().strip()
+    else:
+        raise ValueError(f"Unsupported file format: {path.suffix}. Supported formats: .pdf, .txt, .md")
 
 
 def main():
@@ -97,24 +364,22 @@ def main():
     with st.sidebar:
         st.header("⚙️ Configuration")
         st.success("✅ OpenAI API key loaded from environment")
-        
+            
         # Model selection
         model = st.selectbox(
             "AI Model",
-            ["gpt-5-mini", "gpt-4.1-mini"],
+            ["gpt-5-mini"],
             index=0,
             help="Choose the OpenAI model to use for analysis"
         )
         
-        # Temperature setting
-        temperature = st.slider(
-            "Creativity Level",
-            min_value=0.0,
-            max_value=1.0,
-            value=0.7,
-            step=0.1,
-            help="Higher values make responses more creative, lower values more focused"
+        # Short mode toggle
+        short_mode = st.toggle(
+            "📝 Short Mode",
+            value=False,
+            help="Generate 3 questions instead of 10 for quick preparation"
         )
+
     
     # Main content area
     col1, col2 = st.columns([1, 1])
@@ -174,14 +439,15 @@ def main():
         # Process files
         try:
             with st.spinner("🔄 Processing your documents and generating questions..."):
-                # Initialize forecaster
-                forecaster = InterviewForecaster(api_key=api_key)
+                # Initialize components
+                question_generator = OpenAIQuestionGenerator(api_key)
+                pdf_exporter = PDFExporter()
                 
                 # Handle resume
                 if resume_file:
                     with tempfile.NamedTemporaryFile(delete=False, suffix=f".{resume_file.name.split('.')[-1]}") as tmp_file:
                         tmp_file.write(resume_file.getvalue())
-                        resume_content = forecaster._extract_text_from_file(tmp_file.name)
+                        resume_content = extract_text_from_file(tmp_file.name)
                         os.unlink(tmp_file.name)
                 else:
                     resume_content = resume_text.strip()
@@ -190,17 +456,17 @@ def main():
                 if jd_file:
                     with tempfile.NamedTemporaryFile(delete=False, suffix=f".{jd_file.name.split('.')[-1]}") as tmp_file:
                         tmp_file.write(jd_file.getvalue())
-                        jd_content = forecaster._extract_text_from_file(tmp_file.name)
+                        jd_content = extract_text_from_file(tmp_file.name)
                         os.unlink(tmp_file.name)
                 else:
                     jd_content = jd_text.strip()
                 
                 # Generate questions
-                result = forecaster.question_generator.generate_questions(resume_content, jd_content)
+                num_questions = 3 if short_mode else 10
+                result = question_generator.generate_questions(resume_content, jd_content, num_questions)
                 
                 # Store result in session state
                 st.session_state['analysis_result'] = result
-                st.session_state['forecaster'] = forecaster
         
         except Exception as e:
             st.error(f"❌ Error processing documents: {str(e)}")
@@ -209,7 +475,7 @@ def main():
     # Display results
     if 'analysis_result' in st.session_state:
         result = st.session_state['analysis_result']
-        forecaster = st.session_state['forecaster']
+        pdf_exporter = PDFExporter()  # Create new instance instead of storing in session state
         
         st.markdown("---")
         st.markdown('<div class="sub-header">📊 Analysis Results</div>', unsafe_allow_html=True)
@@ -287,7 +553,7 @@ def main():
                     with st.spinner("Generating PDF..."):
                         # Create temporary PDF file
                         with tempfile.NamedTemporaryFile(delete=False, suffix='.pdf') as tmp_file:
-                            forecaster.pdf_exporter.export_crib_sheet(result, tmp_file.name)
+                            pdf_exporter.export_crib_sheet(result, tmp_file.name)
                             
                             # Read the PDF file
                             with open(tmp_file.name, 'rb') as pdf_file:
