@@ -84,7 +84,7 @@ class OpenAIQuestionGenerator:
         self.client = openai.OpenAI(api_key=api_key)
         self.model = "gpt-5-mini"
     
-    def generate_questions(self, resume_text: str, job_description: str, num_questions: int = 10) -> AnalysisResult:
+    def generate_questions(self, resume_text: str, job_description: str, num_questions: int = 7) -> AnalysisResult:
         """Generate interview questions and STAR responses."""
         
         prompt = self._create_analysis_prompt(resume_text, job_description, num_questions)
@@ -104,7 +104,7 @@ class OpenAIQuestionGenerator:
         except Exception as e:
             raise RuntimeError(f"Error generating questions with OpenAI: {str(e)}")
     
-    def _create_analysis_prompt(self, resume_text: str, job_description: str, num_questions: int = 10) -> str:
+    def _create_analysis_prompt(self, resume_text: str, job_description: str, num_questions: int = 7) -> str:
         """Create the analysis prompt for OpenAI."""
         return f"""
 Analyze the following job description and candidate resume to generate {num_questions} likely interview questions with STAR responses.
@@ -274,8 +274,8 @@ class PDFExporter:
             # Answer
             story.append(Paragraph(q.answer, self.styles['AnswerStyle']))
             
-            # Add page break if we're at question 5 to keep it to 1 page
-            if i == 5:
+            # Add page break if we're at question 4 to keep it to 1 page
+            if i == 4:
                 story.append(PageBreak())
         
         doc.build(story)
@@ -396,7 +396,7 @@ def main():
         short_mode = st.toggle(
             "📝 Short Mode",
             value=False,
-            help="Generate 3 questions instead of 10 for quick preparation"
+            help="Generate 3 questions instead of 7 for quick preparation"
         )
 
     
@@ -481,7 +481,7 @@ def main():
                     jd_content = jd_text.strip()
                 
                 # Generate questions
-                num_questions = 3 if short_mode else 10
+                num_questions = 3 if short_mode else 7
                 result = question_generator.generate_questions(resume_content, jd_content, num_questions)
                 
                 # Store result in session state
