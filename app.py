@@ -16,6 +16,7 @@ from pathlib import Path
 
 import openai
 import fitz  # PyMuPDF
+from docx import Document
 from reportlab.lib.pagesizes import A4
 from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
 from reportlab.lib.units import inch
@@ -57,6 +58,22 @@ class PDFProcessor:
             return text.strip()
         except Exception as e:
             raise ValueError(f"Error extracting text from PDF {pdf_path}: {str(e)}")
+
+
+class DocxProcessor:
+    """Handles Word document text extraction."""
+    
+    @staticmethod
+    def extract_text_from_docx(docx_path: str) -> str:
+        """Extract text content from a Word document."""
+        try:
+            doc = Document(docx_path)
+            text = ""
+            for paragraph in doc.paragraphs:
+                text += paragraph.text + "\n"
+            return text.strip()
+        except Exception as e:
+            raise ValueError(f"Error extracting text from Word document {docx_path}: {str(e)}")
 
 
 class OpenAIQuestionGenerator:
@@ -265,7 +282,7 @@ class PDFExporter:
 
 
 def extract_text_from_file(file_path: str) -> str:
-    """Extract text from a file (PDF or text)."""
+    """Extract text from a file (PDF, Word, or text)."""
     path = Path(file_path)
     
     if not path.exists():
@@ -273,11 +290,13 @@ def extract_text_from_file(file_path: str) -> str:
     
     if path.suffix.lower() == '.pdf':
         return PDFProcessor.extract_text_from_pdf(file_path)
+    elif path.suffix.lower() == '.docx':
+        return DocxProcessor.extract_text_from_docx(file_path)
     elif path.suffix.lower() in ['.txt', '.md']:
         with open(file_path, 'r', encoding='utf-8') as f:
             return f.read().strip()
     else:
-        raise ValueError(f"Unsupported file format: {path.suffix}. Supported formats: .pdf, .txt, .md")
+        raise ValueError(f"Unsupported file format: {path.suffix}. Supported formats: .pdf, .docx, .txt, .md")
 
 
 def main():
@@ -389,8 +408,8 @@ def main():
         
         resume_file = st.file_uploader(
             "Choose a resume file",
-            type=['pdf', 'txt', 'md'],
-            help="Upload your resume in PDF, TXT, or MD format"
+            type=['pdf', 'docx', 'txt', 'md'],
+            help="Upload your resume in PDF, Word, TXT, or MD format"
         )
         
         resume_text = st.text_area(
@@ -404,8 +423,8 @@ def main():
         
         jd_file = st.file_uploader(
             "Choose a job description file",
-            type=['pdf', 'txt', 'md'],
-            help="Upload the job description in PDF, TXT, or MD format"
+            type=['pdf', 'docx', 'txt', 'md'],
+            help="Upload the job description in PDF, Word, TXT, or MD format"
         )
         
         jd_text = st.text_area(
